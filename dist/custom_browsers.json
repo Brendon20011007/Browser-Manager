@@ -1,0 +1,10 @@
+{
+    "Opera": {
+        "path": "C:/Users/Brendon/AppData/Local/Epic Privacy Browser/Application/epic.exe",
+        "incognito_flag": "--private"
+    },
+    "Opera browser": {
+        "path": "C:/Users/Brendon/AppData/Local/Programs/Opera/opera.exe",
+        "incognito_flag": "--private"
+    }
+}

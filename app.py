@@ -1,445 +1,552 @@
 import sys
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, 
-                            QHBoxLayout, QWidget, QLabel, QLineEdit, QMessageBox, 
-                            QStackedWidget, QInputDialog, QFrame)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QFont, QPalette, QColor
+import os
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                            QPushButton, QLabel, QStackedWidget, QMessageBox,
+                            QLineEdit, QHBoxLayout, QFrame, QSizePolicy,
+                            QFileDialog, QDialog, QFormLayout)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
+from PyQt5.QtGui import QIcon, QPixmap
 import psutil
 import pygetwindow as gw
 import subprocess
 import time
+import winreg
+import json
 
-# Custom styles
-STYLE_SHEET = """
-QMainWindow {
-    background-color: #f0f2f5;
-}
-QWidget {
-    font-family: 'Segoe UI', Arial;
-    font-size: 10pt;
-}
-QPushButton {
-    background-color: #0078d4;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    min-width: 120px;
-}
-QPushButton:hover {
-    background-color: #106ebe;
-}
-QPushButton:pressed {
-    background-color: #005a9e;
-}
-QLabel {
-    color: #323130;
-}
-QFrame#header {
-    background-color: #0078d4;
-    color: white;
-    padding: 10px;
-    border-radius: 4px;
-}
-QFrame#content {
-    background-color: white;
-    border-radius: 4px;
-    padding: 20px;
-}
-"""
+class AddBrowserDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Custom Browser")
+        self.setMinimumWidth(400)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QFormLayout(self)
+        
+        # Browser name input
+        self.name_input = QLineEdit()
+        layout.addRow("Browser Name:", self.name_input)
+        
+        # Browser path input
+        path_layout = QHBoxLayout()
+        self.path_input = QLineEdit()
+        self.path_input.setReadOnly(True)
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self.browse_exe)
+        path_layout.addWidget(self.path_input)
+        path_layout.addWidget(browse_btn)
+        layout.addRow("Browser Path:", path_layout)
+        
+        # Incognito flag input
+        self.incognito_input = QLineEdit()
+        self.incognito_input.setPlaceholderText("e.g., --incognito, --private")
+        layout.addRow("Incognito Flag:", self.incognito_input)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addRow("", button_layout)
+    
+    def browse_exe(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Browser Executable",
+            "",
+            "Executable Files (*.exe)"
+        )
+        if file_path:
+            self.path_input.setText(file_path)
+    
+    def get_browser_info(self):
+        return {
+            'name': self.name_input.text(),
+            'path': self.path_input.text(),
+            'incognito_flag': self.incognito_input.text()
+        }
 
 class BrowserDetector(QThread):
-    """
-    A QThread subclass for detecting browser status in a non-blocking way.
-    Emits a signal with detection results.
-    """
-    detection_finished = pyqtSignal(dict)
-
-    def __init__(self, browsers_to_detect):
+    detection_complete = pyqtSignal(dict)
+    
+    def __init__(self):
         super().__init__()
-        self.browsers_to_detect = browsers_to_detect
-        self._is_running = True
+        self.custom_browsers = self.load_custom_browsers()
+        self.browser_paths = self.get_browser_paths()
+    
+    def load_custom_browsers(self):
+        try:
+            with open('custom_browsers.json', 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    
+    def save_custom_browsers(self):
+        with open('custom_browsers.json', 'w') as f:
+            json.dump(self.custom_browsers, f, indent=4)
+    
+    def add_custom_browser(self, browser_info):
+        self.custom_browsers[browser_info['name']] = {
+            'path': browser_info['path'],
+            'incognito_flag': browser_info['incognito_flag']
+        }
+        self.save_custom_browsers()
+        # Recalculate browser paths after adding a custom browser
+        self.browser_paths = self.get_browser_paths()
+    
+    def get_browser_paths(self):
+        paths = {}
+        
+        # Common browser paths
+        common_paths = {
+            'Chrome': [
+                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+                os.path.expanduser(r'~\AppData\Local\Google\Chrome\Application\chrome.exe')
+            ],
+            'Opera': [
+                r'C:\Program Files\Opera\launcher.exe',
+                r'C:\Program Files (x86)\Opera\launcher.exe',
+                os.path.expanduser(r'~\AppData\Local\Programs\Opera\launcher.exe')
+            ],
+            'Brave': [
+                r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
+                r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe',
+                os.path.expanduser(r'~\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe')
+            ],
+            'Epic': [
+                r'C:\Program Files (x86)\Epic Privacy Browser\epic.exe',
+                os.path.expanduser(r'~\AppData\Local\Epic Privacy Browser\epic.exe')
+            ],
+            'Firefox': [
+                r'C:\Program Files\Mozilla Firefox\firefox.exe',
+                r'C:\Program Files (x86)\Mozilla Firefox\firefox.exe',
+                os.path.expanduser(r'~\AppData\Local\Mozilla Firefox\firefox.exe')
+            ],
+            'Edge': [
+                r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+                r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'
+            ]
+        }
+        
+        # Try to get paths from registry
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths') as key:
+                for browser in common_paths.keys():
+                    try:
+                        with winreg.OpenKey(key, f'{browser.lower()}.exe') as browser_key:
+                            path = winreg.QueryValue(browser_key, None)
+                            if path and os.path.exists(path):
+                                paths[browser] = path
+                    except WindowsError:
+                        pass
+        except WindowsError:
+            pass
+        
+        # Check common paths if registry lookup failed
+        for browser, possible_paths in common_paths.items():
+            if browser not in paths:
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        paths[browser] = path
+                        break
+        
+        # Add custom browsers
+        paths.update({name: info['path'] for name, info in self.custom_browsers.items()})
+        
+        return paths
+    
+    def is_browser_running(self, browser_name):
+        try:
+            browser_path = self.browser_paths.get(browser_name, '')
+            if not browser_path:
+                return False
 
+            for proc in psutil.process_iter(['name', 'exe']):
+                if proc.info['exe'] and os.path.exists(proc.info['exe']):
+                    # Compare the base executable name for a match
+                    if os.path.basename(proc.info['exe']).lower() == os.path.basename(browser_path).lower():
+                        return True
+            return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+    
     def run(self):
-        """
-        Runs the browser detection logic.
-        Checks for running processes and incognito/private windows.
-        """
         results = {}
-        for browser_name, exe_name in self.browsers_to_detect.items():
-            status = "blue"  # Default: Not running (Blue)
-            running_processes = [p for p in psutil.process_iter(['name']) if p.info['name'] == exe_name]
+        # Include both built-in and custom browsers for detection
+        all_browsers = set(self.browser_paths.keys()) # Use keys from already updated browser_paths
+        for browser in all_browsers:
+            results[browser] = self.is_browser_running(browser)
+        self.detection_complete.emit(results)
 
-            if running_processes:
-                status = "green"  # Running (Normal mode - Green)
-                # Check for incognito/private windows
-                try:
-                    for window in gw.getWindowsWithTitle(browser_name):
-                        title_lower = window.title.lower()
-                        # Specific checks for common incognito/private window titles
-                        if "incognito" in title_lower or "private" in title_lower or "inprivate" in title_lower:
-                            status = "red"  # Incognito/Private mode (Red)
-                            break
-                except gw.PyGetWindowException:
-                    # Handle cases where pygetwindow might not find windows or permission issues
-                    pass
-            results[browser_name] = status
-            if not self._is_running:
-                break # Stop if requested
-
-        self.detection_finished.emit(results)
-
-    def stop(self):
-        """
-        Stops the detection thread gracefully.
-        """
-        self._is_running = False
+class BrowserActions(QThread):
+    def __init__(self, detector):
+        super().__init__()
+        self.detector = detector  # Use the shared detector instance
+        self.browser_paths = self.detector.get_browser_paths()
+        self.custom_browsers = self.detector.load_custom_browsers()
+        self.browser_incognito_flags = {
+            'Chrome': '--incognito',
+            'Opera': '--private',
+            'Brave': '--incognito',
+            'Epic': '--incognito',
+            'Firefox': '-private',
+            'Edge': '--inprivate'
+        }
+        # Add custom browser incognito flags
+        self.browser_incognito_flags.update(
+            {name: info['incognito_flag'] for name, info in self.custom_browsers.items()}
+        )
+    
+    def add_custom_browser(self, browser_info):
+        self.detector.add_custom_browser(browser_info)
+        # Update browser paths and incognito flags after adding custom browser
+        self.browser_paths = self.detector.get_browser_paths()
+        self.browser_incognito_flags[browser_info['name']] = browser_info['incognito_flag']
+    
+    def is_url_open(self, url):
+        try:
+            windows = gw.getAllWindows()
+            for window in windows:
+                if url in window.title:
+                    return True
+            return False
+        except Exception:
+            return False
+    
+    def open_url_in_browser(self, browser_name, url):
+        if browser_name not in self.browser_paths:
+            return False, f"Browser {browser_name} not supported"
+        
+        browser_path = self.browser_paths[browser_name]
+        incognito_flag = self.browser_incognito_flags.get(browser_name, '')
+        
+        if not os.path.exists(browser_path):
+            return False, f"{browser_name} is not installed"
+        
+        try:
+            command = [browser_path, incognito_flag, url] if incognito_flag else [browser_path, url]
+            subprocess.Popen(command)
+            return True, f"Opening {url} in {browser_name}"
+        except Exception as e:
+            return False, f"Error opening {browser_name}: {str(e)}"
 
 class BrowserDetectionPage(QWidget):
-    """
-    Page 1: Browser Detection Dashboard.
-    Displays buttons for browser detection and updates their status visually.
-    """
-    def __init__(self):
+    def __init__(self, detector):
         super().__init__()
-        self.browsers = {
-            "Google Chrome": "chrome.exe",
-            "Opera": "opera.exe",
-            "Brave": "brave.exe",
-            "Epic": "epic.exe",
-            "Firefox": "firefox.exe",
-            "Edge": "msedge.exe"
-        }
-        self.browser_buttons = {}
-        self.detection_thread = None
+        self.detector = detector  # Use the shared detector instance
         self.init_ui()
-
+        self.detector.detection_complete.connect(self.update_browser_status)
+        self.detector.start()
+        
+        # Set up timer for periodic updates
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.refresh_detection)
+        self.update_timer.start(5000)  # Update every 5 seconds
+    
     def init_ui(self):
-        main_layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         
-        # Header
-        header = QFrame()
-        header.setObjectName("header")
-        header_layout = QVBoxLayout()
-        title = QLabel("Browser Detection Dashboard")
-        title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        title.setStyleSheet("color: white;")
-        header_layout.addWidget(title)
-        header.setLayout(header_layout)
-        main_layout.addWidget(header)
-
-        # Content
-        content = QFrame()
-        content.setObjectName("content")
-        content_layout = QVBoxLayout()
+        # Title
+        title = QLabel("Browser Detection")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(title)
         
-        # Browser grid
-        browser_grid = QHBoxLayout()
-        for browser_name in self.browsers.keys():
-            button = QPushButton(browser_name)
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #0078d4;
-                    color: white;
-                    border: none;
-                    padding: 8px;
-                    border-radius: 4px;
-                    min-width: 100px;
-                }
-                QPushButton[status="blue"] { background-color: #0078d4; }
-                QPushButton[status="green"] { background-color: #107c10; }
-                QPushButton[status="red"] { background-color: #d13438; }
-            """)
-            button.setProperty("status", "blue")
-            button.setFixedSize(100, 40)
-            browser_grid.addWidget(button)
-            self.browser_buttons[browser_name] = button
+        # Status container
+        self.status_container = QWidget()
+        self.status_layout = QVBoxLayout(self.status_container)
+        layout.addWidget(self.status_container)
         
-        content_layout.addLayout(browser_grid)
+        # Refresh button
+        refresh_btn = QPushButton("Refresh Detection")
+        refresh_btn.clicked.connect(self.refresh_detection)
+        layout.addWidget(refresh_btn)
         
-        # Detection button
-        self.detection_button = QPushButton("Run Browser Detection")
-        self.detection_button.setStyleSheet("""
-            QPushButton {
-                background-color: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                min-width: 150px;
-            }
-        """)
-        self.detection_button.clicked.connect(self.run_detection)
-        content_layout.addWidget(self.detection_button, alignment=Qt.AlignCenter)
-        
-        content.setLayout(content_layout)
-        main_layout.addWidget(content)
-        
-        self.setLayout(main_layout)
-
-    def run_detection(self):
-        """
-        Starts the browser detection process in a new thread.
-        Disables the detection button during the scan.
-        """
-        if self.detection_thread and self.detection_thread.isRunning():
-            self.detection_thread.stop()
-            self.detection_thread.wait()
-
-        self.detection_button.setEnabled(False) # Disable button during detection
-        self.detection_thread = BrowserDetector(self.browsers)
-        self.detection_thread.detection_finished.connect(self.update_browser_status)
-        self.detection_thread.start()
-
+        layout.addStretch()
+    
     def update_browser_status(self, results):
-        """
-        Updates the color of browser buttons based on detection results.
-        Re-enables the detection button after the scan.
-        """
-        for browser_name, status_color in results.items():
-            if browser_name in self.browser_buttons:
-                self.browser_buttons[browser_name].setProperty("status", status_color)
-                self.browser_buttons[browser_name].style().unpolish(self.browser_buttons[browser_name])
-                self.browser_buttons[browser_name].style().polish(self.browser_buttons[browser_name])
-        self.detection_button.setEnabled(True) # Re-enable button
-
-# Helper function to find a browser window containing a specific URL in its title
-# This is a best-effort approach, as not all browsers put the full URL in the window title
-def find_browser_window_with_url(browser_name, url_partial):
-    try:
-        for window in gw.getWindowsWithTitle(browser_name):
-            if url_partial.lower() in window.title.lower():
-                return window
-    except gw.PyGetWindowException:
-        pass
-    return None
-
-class BrowserActions:
-    """
-    Encapsulates actions related to opening and managing browser instances.
-    """
-    BROWSER_PATHS = {
-        "Google Chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "Opera": r"C:\Users\Brendon\AppData\Local\Programs\Opera\opera.exe",
-        "Brave": r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-        "Epic": r"C:\Users\Brendon\AppData\Local\Epic Privacy Browser\Application\epic.exe",
-        "Firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
-        "Edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-    }
-    
-    # Incognito/Private mode flags for each browser
-    BROWSER_INCOGNITO_FLAGS = {
-        "Google Chrome": "--incognito",
-        "Opera": "--private",
-        "Brave": "--incognito",
-        "Epic": "--incognito",  # Epic is privacy-focused by default
-        "Firefox": "-private",
-        "Edge": "--inprivate"
-    }
-    
-    BROWSER_PROCESS_NAMES = {
-        "Google Chrome": "chrome.exe",
-        "Opera": "opera.exe",
-        "Brave": "brave.exe",
-        "Epic": "epic.exe",
-        "Firefox": "firefox.exe",
-        "Edge": "msedge.exe"
-    }
-
-    @staticmethod
-    def open_url_in_browser(browser_name, url):
-        """
-        Opens the given URL in the specified browser in incognito/private mode.
-        """
-        browser_path = BrowserActions.BROWSER_PATHS.get(browser_name)
-        incognito_flag = BrowserActions.BROWSER_INCOGNITO_FLAGS.get(browser_name)
+        # Clear existing status widgets
+        while self.status_layout.count():
+            item = self.status_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         
-        if browser_path and incognito_flag:
-            try:
-                # Construct command with incognito flag
-                command = [browser_path, incognito_flag, url]
-                subprocess.Popen(command)
-                return True
-            except FileNotFoundError:
-                QMessageBox.warning(None, "Browser Not Found",
-                                    f"{browser_name} executable not found at {browser_path}")
-            except Exception as e:
-                QMessageBox.critical(None, "Error", f"Failed to open {browser_name}: {e}")
-        else:
-            QMessageBox.warning(None, "Browser Not Supported",
-                                f"Actions for {browser_name} are not supported yet.")
-        return False
-
-    @staticmethod
-    def is_url_open_in_browser(browser_name, url_partial):
-        """
-        Checks if a given URL (partial match) is open in the specified browser.
-        This is a best-effort check based on window titles.
-        """
-        return find_browser_window_with_url(browser_name, url_partial) is not None
-
-    @staticmethod
-    def terminate_browser_process(browser_name):
-        """
-        Terminates all processes associated with the given browser.
-        """
-        exe_name = BrowserActions.BROWSER_PROCESS_NAMES.get(browser_name)
-        if not exe_name:
-            return False
-        try:
-            # Use taskkill for a robust termination on Windows
-            subprocess.run(["taskkill", "/F", "/IM", exe_name], check=True, capture_output=True)
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Error terminating {exe_name}: {e.stderr.decode()}")
-            return False
-        except FileNotFoundError:
-            print("taskkill command not found. Ensure it's in your system PATH.")
-            return False
+        # Add status for each browser
+        for browser, is_running in results.items():
+            status_frame = QFrame()
+            status_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border-radius: 8px;
+                    padding: 10px;
+                    margin: 5px;
+                }
+            """)
+            
+            status_layout = QHBoxLayout(status_frame)
+            
+            # Browser name
+            name_label = QLabel(browser)
+            name_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+            status_layout.addWidget(name_label)
+            
+            # Status indicator
+            status_label = QLabel("Running" if is_running else "Not Running")
+            status_label.setStyleSheet(f"""
+                color: {'#28a745' if is_running else '#dc3545'};
+                font-weight: bold;
+            """)
+            status_layout.addWidget(status_label)
+            
+            self.status_layout.addWidget(status_frame)
+    
+    def refresh_detection(self):
+        self.detector.start()
 
 class BrowserActionPage(QWidget):
-    """
-    Page 2: Browser Action Center.
-    Allows opening URLs and managing browser instances.
-    """
-    def __init__(self):
+    def __init__(self, browser_actions):
         super().__init__()
-        self.browsers = [
-            "Google Chrome",
-            "Opera",
-            "Brave",
-            "Epic",
-            "Firefox",
-            "Edge"
-        ]
+        self.browser_actions = browser_actions  # Use the shared actions instance
         self.init_ui()
-
+    
     def init_ui(self):
-        main_layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         
-        # Header
-        header = QFrame()
-        header.setObjectName("header")
-        header_layout = QVBoxLayout()
-        title = QLabel("Browser Action Center")
-        title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        title.setStyleSheet("color: white;")
-        header_layout.addWidget(title)
-        header.setLayout(header_layout)
-        main_layout.addWidget(header)
-
-        # Content
-        content = QFrame()
-        content.setObjectName("content")
-        content_layout = QVBoxLayout()
+        # Title
+        title = QLabel("Browser Actions")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(title)
         
-        # Browser buttons grid
-        browser_grid = QHBoxLayout()
-        for browser_name in self.browsers:
-            button = QPushButton(f"Open {browser_name}")
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #0078d4;
-                    color: white;
-                    border: none;
-                    padding: 8px;
-                    border-radius: 4px;
-                    min-width: 100px;
-                }
-            """)
-            button.setFixedSize(100, 40)
-            button.clicked.connect(lambda _, b=browser_name: self.show_action_dialog(b))
-            browser_grid.addWidget(button)
+        # URL input
+        url_layout = QHBoxLayout()
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("Enter URL (e.g., https://office.com)")
+        self.url_input.setText("https://office.com")
+        url_layout.addWidget(self.url_input)
         
-        content_layout.addLayout(browser_grid)
-        content.setLayout(content_layout)
-        main_layout.addWidget(content)
+        # Open button
+        open_btn = QPushButton("Open URL")
+        open_btn.clicked.connect(self.open_url)
+        url_layout.addWidget(open_btn)
         
-        self.setLayout(main_layout)
-
-    def show_action_dialog(self, browser_name):
-        """
-        Shows a dialog for the user to choose an action (open office.com or custom URL).
-        """
-        options = ["Open office.com", "Open Custom URL"]
-        item, ok = QInputDialog.getItem(self, f"Action for {browser_name}",
-                                      "Choose an action:", options, 0, False)
-
-        if ok and item:
-            if item == "Open office.com":
-                self.handle_office_com_action(browser_name)
-            elif item == "Open Custom URL":
-                self.handle_custom_url_action(browser_name)
-
-    def handle_office_com_action(self, browser_name):
-        """
-        Handles the action to open office.com.
-        Checks if office.com is already open and prompts the user if so.
-        """
-        office_url = "https://office.com"
-        if BrowserActions.is_url_open_in_browser(browser_name, "office.com"):
-            reply = QMessageBox.question(self, "Office.com Already Open",
-                                       "Office.com is already open. Do you want to close and reopen it?",
-                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        layout.addLayout(url_layout)
+        
+        # Browser buttons container
+        self.browser_container = QWidget()
+        self.browser_layout = QVBoxLayout(self.browser_container)
+        layout.addWidget(self.browser_container)
+        
+        # Add browser buttons
+        self.update_browser_buttons()
+        
+        # Add custom browser button
+        add_browser_btn = QPushButton("Add Custom Browser")
+        add_browser_btn.clicked.connect(self.add_custom_browser)
+        layout.addWidget(add_browser_btn)
+        
+        layout.addStretch()
+    
+    def update_browser_buttons(self):
+        # Clear existing buttons
+        while self.browser_layout.count():
+            item = self.browser_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add buttons for each browser
+        for browser in self.browser_actions.detector.browser_paths.keys(): # Get paths from the shared detector
+            btn = QPushButton(f"Open in {browser}")
+            btn.clicked.connect(lambda checked, b=browser: self.open_in_browser(b))
+            self.browser_layout.addWidget(btn)
+    
+    def add_custom_browser(self):
+        dialog = AddBrowserDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            browser_info = dialog.get_browser_info()
+            if browser_info['name'] and browser_info['path']:
+                self.browser_actions.add_custom_browser(browser_info)
+                self.update_browser_buttons()
+                QMessageBox.information(self, "Success", f"Added {browser_info['name']} successfully!")
+                # Trigger a refresh on the detection page to show the new browser
+                self.parent().parent().detection_page.refresh_detection() # Access the detection page from parent
+            else:
+                QMessageBox.warning(self, "Error", "Please provide both browser name and path!")
+    
+    def open_url(self):
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Error", "Please enter a URL")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        if self.browser_actions.is_url_open(url):
+            reply = QMessageBox.question(
+                self, 'URL Already Open',
+                f'{url} is already open. Do you want to close and reopen it in incognito mode?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
             if reply == QMessageBox.Yes:
-                if BrowserActions.terminate_browser_process(browser_name):
-                    time.sleep(1)  # Give some time for the process to terminate
-                    BrowserActions.open_url_in_browser(browser_name, office_url)
-                else:
-                    QMessageBox.warning(self, "Error", f"Failed to terminate {browser_name}.")
-        else:
-            BrowserActions.open_url_in_browser(browser_name, office_url)
-
-    def handle_custom_url_action(self, browser_name):
-        """
-        Handles the action to open a custom URL.
-        """
-        text, ok = QInputDialog.getText(self, f"Open Custom URL in {browser_name}",
-                                       "Enter URL:", QLineEdit.Normal, "https://")
-        if ok and text:
-            BrowserActions.open_url_in_browser(browser_name, text)
+                # Close existing window
+                try:
+                    windows = gw.getAllWindows()
+                    for window in windows:
+                        if url in window.title:
+                            window.close()
+                except Exception:
+                    pass
+        
+        # Open in default browser (Chrome)
+        success, message = self.browser_actions.open_url_in_browser('Chrome', url)
+        if not success:
+            QMessageBox.warning(self, "Error", message)
+    
+    def open_in_browser(self, browser_name):
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Error", "Please enter a URL")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        success, message = self.browser_actions.open_url_in_browser(browser_name, url)
+        if not success:
+            QMessageBox.warning(self, "Error", message)
 
 class BrowserManagerApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Browser Manager")
-        self.setFixedSize(800, 300)  # Fixed window size
-        self.setStyleSheet(STYLE_SHEET)
+        self.setMinimumSize(800, 300)  # Set minimum size instead of fixed size
+        
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
+        # Create central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # Create shared instances
+        self.detector = BrowserDetector()
+        self.browser_actions = BrowserActions(self.detector)
 
+        # Create stacked widget for pages
         self.stacked_widget = QStackedWidget()
-        self.setCentralWidget(self.stacked_widget)
-
-        self.detection_page = BrowserDetectionPage()
-        self.action_page = BrowserActionPage()
-
+        layout.addWidget(self.stacked_widget)
+        
+        # Create pages, passing shared instances
+        self.detection_page = BrowserDetectionPage(self.detector)
+        self.action_page = BrowserActionPage(self.browser_actions)
+        
+        # Add pages to stacked widget
         self.stacked_widget.addWidget(self.detection_page)
         self.stacked_widget.addWidget(self.action_page)
-
-        self.create_navigation_bar()
-
-    def create_navigation_bar(self):
-        nav_bar = QWidget()
+        
+        # Create navigation buttons
         nav_layout = QHBoxLayout()
-        nav_bar.setLayout(nav_layout)
+        
+        self.detection_btn = QPushButton("Browser Detection")
+        self.detection_btn.setCheckable(True)
+        self.detection_btn.setChecked(True)
+        self.detection_btn.clicked.connect(lambda: self.switch_page(0))
+        
+        self.action_btn = QPushButton("Browser Actions")
+        self.action_btn.setCheckable(True)
+        self.action_btn.clicked.connect(lambda: self.switch_page(1))
+        
+        nav_layout.addWidget(self.detection_btn)
+        nav_layout.addWidget(self.action_btn)
+        layout.addLayout(nav_layout)
+        
+        # Apply styles
+        self.apply_styles()
+    
+    def apply_styles(self):
+        """Apply custom styles to the application"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f0f0f0;
+            }
+            QPushButton {
+                background-color: #0078D7;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-size: 14px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #106EBE;
+            }
+            QPushButton:checked {
+                background-color: #005A9E;
+            }
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+            }
+            QLineEdit {
+                padding: 8px;
+                border: 1px solid #CCCCCC;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                border: 1px solid #E0E0E0;
+            }
+        """)
+        
+        # Style navigation buttons
+        nav_style = """
+            QPushButton {
+                background-color: #F0F0F0;
+                color: #333333;
+                border: 1px solid #CCCCCC;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-size: 14px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #E0E0E0;
+            }
+            QPushButton:checked {
+                background-color: #0078D7;
+                color: white;
+                border: none;
+            }
+        """
+        self.detection_btn.setStyleSheet(nav_style)
+        self.action_btn.setStyleSheet(nav_style)
 
-        btn_detection = QPushButton("Browser Detection")
-        btn_detection.clicked.connect(lambda: self.stacked_widget.setCurrentWidget(self.detection_page))
-        nav_layout.addWidget(btn_detection)
-
-        btn_action = QPushButton("Browser Action")
-        btn_action.clicked.connect(lambda: self.stacked_widget.setCurrentWidget(self.action_page))
-        nav_layout.addWidget(btn_action)
-
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(nav_bar)
-        main_layout.addWidget(self.stacked_widget)
-
-        container = QWidget()
-        container.setLayout(main_layout)
-        self.setCentralWidget(container)
+    def switch_page(self, index):
+        """Switch between pages"""
+        self.stacked_widget.setCurrentIndex(index)
+        self.detection_btn.setChecked(index == 0)
+        self.action_btn.setChecked(index == 1)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # Set application-wide icon
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.ico")
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
+    
     window = BrowserManagerApp()
     window.show()
     sys.exit(app.exec_()) 
